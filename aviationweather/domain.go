@@ -62,13 +62,6 @@ func (Domain) Register(app *kit.App) {
 		URIType: "station",
 		Args:    []kit.Arg{{Name: "stations", Help: "ICAO station codes e.g. KSFO KLAX", Variadic: true}},
 	}, getTAF)
-
-	kit.Handle(app, kit.OpMeta{
-		Name: "station", Group: "read", Single: true,
-		Summary: "Fetch airport/station info for one or more ICAO codes",
-		URIType: "station",
-		Args:    []kit.Arg{{Name: "stations", Help: "ICAO codes e.g. KSFO KLAX", Variadic: true}},
-	}, getStation)
 }
 
 // newClient builds the client from the host-resolved config.
@@ -99,11 +92,6 @@ type metarInput struct {
 
 type tafInput struct {
 	Stations []string `kit:"arg,variadic" help:"ICAO station codes e.g. KSFO KLAX"`
-	Client   *Client  `kit:"inject"`
-}
-
-type stationInput struct {
-	Stations []string `kit:"arg,variadic" help:"ICAO codes e.g. KSFO KLAX"`
 	Client   *Client  `kit:"inject"`
 }
 
@@ -141,26 +129,12 @@ func getTAF(ctx context.Context, in tafInput, emit func(*TAF) error) error {
 	return nil
 }
 
-func getStation(ctx context.Context, in stationInput, emit func(*Station) error) error {
-	ids := strings.Join(in.Stations, ",")
-	records, err := in.Client.GetStation(ctx, ids)
-	if err != nil {
-		return err
-	}
-	for _, r := range records {
-		if err := emit(r); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // --- Resolver: the URI-native string functions, pure and network-free ---
 
 // icaoRE matches a 4-letter uppercase ICAO airport code.
 var icaoRE = regexp.MustCompile(`^[A-Z]{4}$`)
 
-// Classify turns any accepted input — a bare uppercase ICAO code — into the
+// Classify turns any accepted input -- a bare uppercase ICAO code -- into the
 // canonical (type, id), so `ant resolve` and `ant url` touch no network.
 // Only 4-letter uppercase ICAO codes are accepted; lowercase is rejected.
 func (Domain) Classify(input string) (uriType, id string, err error) {

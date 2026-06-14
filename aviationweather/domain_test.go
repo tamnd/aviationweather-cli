@@ -74,37 +74,17 @@ func TestHostWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := &METAR{Station: "KJFK", Raw: "KJFK 141551Z 09007KT 10SM FEW250 23/12 A3006"}
+	m := &METAR{ID: 1, Station: "KJFK", Raw: "KJFK 141551Z 09007KT 10SM FEW250 23/12 A3006"}
 	u, err := h.Mint(m)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if want := "aviationweather://station/KJFK"; u.String() != want {
+	if want := "aviationweather://station/1"; u.String() != want {
 		t.Errorf("Mint = %q, want %q", u.String(), want)
 	}
 
 	got, err := h.ResolveOn("aviationweather", "KLAX")
 	if err != nil || got.String() != "aviationweather://station/KLAX" {
 		t.Errorf("ResolveOn = (%q, %v), want aviationweather://station/KLAX", got.String(), err)
-	}
-}
-
-func TestJoinSky(t *testing.T) {
-	layers := []wireSkyLayer{
-		{Cover: "FEW", Base: 2000},
-		{Cover: "SCT", Base: 5000},
-		{Cover: "BKN", Base: 20000},
-	}
-	got := joinSky(layers)
-	want := "FEW020 SCT050 BKN200"
-	if got != want {
-		t.Errorf("joinSky = %q, want %q", got, want)
-	}
-}
-
-func TestJoinSkyEmpty(t *testing.T) {
-	got := joinSky(nil)
-	if got != "" {
-		t.Errorf("joinSky(nil) = %q, want empty", got)
 	}
 }

@@ -40,13 +40,13 @@ type Client struct {
 	last time.Time
 }
 
-// NewClient returns a Client with sensible defaults: a 15 s timeout, a 300 ms
+// NewClient returns a Client with sensible defaults: a 15 s timeout, a 500 ms
 // minimum gap between requests, and three retries on transient errors.
 func NewClient() *Client {
 	return &Client{
 		HTTP:      &http.Client{Timeout: 15 * time.Second},
 		UserAgent: DefaultUserAgent,
-		Rate:      300 * time.Millisecond,
+		Rate:      500 * time.Millisecond,
 		Retries:   3,
 	}
 }
@@ -125,76 +125,52 @@ func backoff(attempt int) time.Duration {
 
 // ---------- output types ----------
 
-// METAR is a single aviation weather observation with human-readable formatted fields.
+// METAR is a single aviation weather observation.
 type METAR struct {
-	Station    string `kit:"id" json:"station"`
-	Time       string `json:"time"`
-	Temp       string `json:"temp_c"`
-	Dewpoint   string `json:"dewpoint_c"`
-	Wind       string `json:"wind"`
-	Visibility string `json:"vis_sm"`
-	Altimeter  string `json:"altimeter"`
-	Weather    string `json:"weather"`
-	Raw        string `json:"raw"`
+	ID         int     `json:"id"         kit:"id"`
+	Station    string  `json:"station"`
+	Raw        string  `json:"raw"`
+	Time       string  `json:"time"`
+	Temp       float64 `json:"temp"`
+	Dewpoint   float64 `json:"dewpoint"`
+	WindDir    int     `json:"wind_dir"`
+	WindSpeed  int     `json:"wind_speed"`
+	Visibility string  `json:"visibility"`
+	Altimeter  float64 `json:"altimeter"`
 }
 
 // TAF is a terminal aerodrome forecast.
 type TAF struct {
-	Station string `kit:"id" json:"station"`
-	Issued  string `json:"issued"`
-	Raw     string `json:"raw"`
-}
-
-// Station holds static airport/station information.
-type Station struct {
-	ICAO    string `kit:"id" json:"icao"`
-	IATA    string `json:"iata"`
-	Name    string `json:"name"`
-	State   string `json:"state"`
-	Country string `json:"country"`
-	Lat     string `json:"lat"`
-	Lon     string `json:"lon"`
-	Elev    int    `json:"elev_ft"`
+	ID        int    `json:"id"         kit:"id"`
+	Station   string `json:"station"`
+	Raw       string `json:"raw"`
+	Time      string `json:"time"`
+	ValidFrom string `json:"valid_from"`
+	ValidTo   string `json:"valid_to"`
 }
 
 // ---------- wire types ----------
 
-type wireSkyLayer struct {
-	Cover string `json:"cover"`
-	Base  int    `json:"base"`
-}
-
 type wireMetar struct {
+	MetarID    int             `json:"metar_id"`
 	IcaoId     string          `json:"icaoId"`
-	ObsTime    int64           `json:"obsTime"`
-	ReportTime string          `json:"reportTime"`
 	RawOb      string          `json:"rawOb"`
-	Temp       float64         `json:"temp"`
-	Dewp       float64         `json:"dewp"`
+	ReportTime string          `json:"reportTime"`
+	Temp       *float64        `json:"temp"`
+	Dewp       *float64        `json:"dewp"`
 	Wdir       int             `json:"wdir"`
 	Wspd       int             `json:"wspd"`
 	Visib      json.RawMessage `json:"visib"`
-	Altim      float64         `json:"altim"`
-	WxString   string          `json:"wxString"`
-	Sky        []wireSkyLayer  `json:"sky"`
-	Clouds     []wireSkyLayer  `json:"clouds"`
+	Altim      *float64        `json:"altim"`
 }
 
 type wireTaf struct {
-	IcaoId    string `json:"icaoId"`
-	IssueTime string `json:"issueTime"`
-	RawTAF    string `json:"rawTAF"`
-}
-
-type wireAirport struct {
-	IcaoId  string  `json:"icaoId"`
-	IataId  string  `json:"iataId"`
-	Name    string  `json:"name"`
-	State   string  `json:"state"`
-	Country string  `json:"country"`
-	Lat     float64 `json:"lat"`
-	Lon     float64 `json:"lon"`
-	Elev    int     `json:"elev"`
+	TafID         int    `json:"taf_id"`
+	IcaoId        string `json:"icaoId"`
+	RawTAF        string `json:"rawTAF"`
+	ReportTime    string `json:"reportTime"`
+	ValidTimeFrom string `json:"validTimeFrom"`
+	ValidTimeTo   string `json:"validTimeTo"`
 }
 
 // ---------- API methods ----------
@@ -221,23 +197,27 @@ func (c *Client) GetMETARFromURL(ctx context.Context, url string) ([]*METAR, err
 	}
 	out := make([]*METAR, 0, len(raw))
 	for _, w := range raw {
-		wind := fmt.Sprintf("%d°@%dkt", w.Wdir, w.Wspd)
-		// altim from API is in hPa; convert to inHg (1 hPa = 0.02953 inHg)
-		altInHg := w.Altim * 0.02953
-		// visib is a string or number in the API ("10+", 10.0, etc.)
-		visib := parseVisib(w.Visib)
-		// use reportTime if available, else unix timestamp
-		obsTime := w.ReportTime
+		var temp, dewp, altim float64
+		if w.Temp != nil {
+			temp = *w.Temp
+		}
+		if w.Dewp != nil {
+			dewp = *w.Dewp
+		}
+		if w.Altim != nil {
+			altim = *w.Altim
+		}
 		out = append(out, &METAR{
+			ID:         w.MetarID,
 			Station:    w.IcaoId,
-			Time:       obsTime,
-			Temp:       fmt.Sprintf("%.1f", w.Temp),
-			Dewpoint:   fmt.Sprintf("%.1f", w.Dewp),
-			Wind:       wind,
-			Visibility: visib,
-			Altimeter:  fmt.Sprintf("%.2f", altInHg),
-			Weather:    w.WxString,
 			Raw:        w.RawOb,
+			Time:       w.ReportTime,
+			Temp:       temp,
+			Dewpoint:   dewp,
+			WindDir:    w.Wdir,
+			WindSpeed:  w.Wspd,
+			Visibility: parseVisib(w.Visib),
+			Altimeter:  altim,
 		})
 	}
 	return out, nil
@@ -261,56 +241,15 @@ func (c *Client) GetTAFFromURL(ctx context.Context, url string) ([]*TAF, error) 
 	out := make([]*TAF, 0, len(raw))
 	for _, w := range raw {
 		out = append(out, &TAF{
-			Station: w.IcaoId,
-			Issued:  w.IssueTime,
-			Raw:     w.RawTAF,
+			ID:        w.TafID,
+			Station:   w.IcaoId,
+			Raw:       w.RawTAF,
+			Time:      w.ReportTime,
+			ValidFrom: w.ValidTimeFrom,
+			ValidTo:   w.ValidTimeTo,
 		})
 	}
 	return out, nil
-}
-
-// GetStation fetches airport/station information for the given comma-separated ICAO ids.
-func (c *Client) GetStation(ctx context.Context, ids string) ([]*Station, error) {
-	return c.GetStationFromURL(ctx, apiBase+"/airport?ids="+ids+"&format=json")
-}
-
-// GetStationFromURL fetches airport/station information from an explicit URL (useful for testing).
-func (c *Client) GetStationFromURL(ctx context.Context, url string) ([]*Station, error) {
-	body, err := c.Get(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	var raw []wireAirport
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("decode airport: %w", err)
-	}
-	out := make([]*Station, 0, len(raw))
-	for _, w := range raw {
-		out = append(out, &Station{
-			ICAO:    w.IcaoId,
-			IATA:    w.IataId,
-			Name:    w.Name,
-			State:   w.State,
-			Country: w.Country,
-			Lat:     fmt.Sprintf("%.3f", w.Lat),
-			Lon:     fmt.Sprintf("%.3f", w.Lon),
-			Elev:    w.Elev,
-		})
-	}
-	return out, nil
-}
-
-// joinSky formats a list of sky layers as "FEW020 SCT050 BKN200".
-func joinSky(layers []wireSkyLayer) string {
-	parts := make([]string, 0, len(layers))
-	for _, l := range layers {
-		if l.Cover == "" {
-			continue
-		}
-		// base is in hundreds of feet
-		parts = append(parts, fmt.Sprintf("%s%03d", l.Cover, l.Base/100))
-	}
-	return strings.Join(parts, " ")
 }
 
 // parseVisib extracts a visibility string from the raw JSON value, which may be
@@ -330,5 +269,5 @@ func parseVisib(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &f); err == nil {
 		return fmt.Sprintf("%.0f", f)
 	}
-	return string(raw)
+	return strings.TrimSpace(string(raw))
 }
