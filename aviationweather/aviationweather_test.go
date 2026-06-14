@@ -65,20 +65,20 @@ func TestGetRetriesOn503(t *testing.T) {
 }
 
 func TestGetMETAR(t *testing.T) {
+	// altim in the API is hPa; 1018.8 hPa ≈ 30.09 inHg
 	payload := []map[string]any{
 		{
-			"stationId": "KJFK",
-			"obsTime":   "2024-01-14T15:51:00Z",
-			"rawOb":     "KJFK 141551Z 09007KT 10SM FEW250 23/12 A3006",
-			"temp":      23.0,
-			"dewpoint":  12.0,
-			"wdir":      90,
-			"wspd":      7,
-			"wgst":      0,
-			"visib":     10.0,
-			"altim":     30.06,
-			"wxString":  "",
-			"sky":       []map[string]any{{"cover": "FEW", "base": 25000}},
+			"icaoId":     "KJFK",
+			"reportTime": "2024-01-14T15:51:00.000Z",
+			"rawOb":      "METAR KJFK 141551Z 09007KT 10SM FEW250 23/12 A3006",
+			"temp":       23.0,
+			"dewp":       12.0,
+			"wdir":       90,
+			"wspd":       7,
+			"visib":      "10",
+			"altim":      1018.8,
+			"wxString":   "",
+			"clouds":     []map[string]any{{"cover": "FEW", "base": 25000}},
 		},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +91,7 @@ func TestGetMETAR(t *testing.T) {
 
 	c := aviationweather.NewClient()
 	c.Rate = 0
-	// point client at test server by replacing Host in URL via Get directly
-	records, err := c.GetMETARFromURL(context.Background(), srv.URL+"/api/data/metar?ids=KJFK&format=json")
+	records, err := c.GetMETARFromURL(context.Background(), srv.URL+"/api/data/metar?ids=KJFK&format=json&hours=1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,18 +102,43 @@ func TestGetMETAR(t *testing.T) {
 	if m.Station != "KJFK" {
 		t.Errorf("Station = %q, want KJFK", m.Station)
 	}
-	if m.WindDir != 90 {
-		t.Errorf("WindDir = %d, want 90", m.WindDir)
+	if m.Wind != "90°@7kt" {
+		t.Errorf("Wind = %q, want 90°@7kt", m.Wind)
 	}
-	if m.SkyString != "FEW250" {
-		t.Errorf("SkyString = %q, want FEW250", m.SkyString)
+	if m.Temp != "23.0" {
+		t.Errorf("Temp = %q, want 23.0", m.Temp)
+	}
+	// 1018.8 hPa * 0.02953 ≈ 30.09 inHg
+	if m.Altimeter != "30.09" {
+		t.Errorf("Altimeter = %q, want 30.09", m.Altimeter)
+	}
+	if m.Visibility != "10" {
+		t.Errorf("Visibility = %q, want 10", m.Visibility)
+	}
+}
+
+func TestGetMETAREmpty(t *testing.T) {
+	// API returns empty array when blocked from datacenter IPs — must not error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	c := aviationweather.NewClient()
+	c.Rate = 0
+	records, err := c.GetMETARFromURL(context.Background(), srv.URL+"/api/data/metar?ids=KSFO&format=json")
+	if err != nil {
+		t.Fatalf("empty array should not error, got: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("got %d records, want 0", len(records))
 	}
 }
 
 func TestGetTAF(t *testing.T) {
 	payload := []map[string]any{
 		{
-			"stationId": "KLAX",
+			"icaoId":    "KLAX",
 			"issueTime": "2024-01-14T12:00:00Z",
 			"rawTAF":    "KLAX 141200Z 1412/1518 25010KT P6SM SKC",
 		},
@@ -133,24 +157,53 @@ func TestGetTAF(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
-	if records[0].Station != "KLAX" {
-		t.Errorf("Station = %q, want KLAX", records[0].Station)
+	taf := records[0]
+	if taf.Station != "KLAX" {
+		t.Errorf("Station = %q, want KLAX", taf.Station)
 	}
-	if records[0].Raw == "" {
+	if taf.Issued != "2024-01-14T12:00:00Z" {
+		t.Errorf("Issued = %q", taf.Issued)
+	}
+	if taf.Raw == "" {
 		t.Error("Raw is empty")
 	}
 }
 
-func TestGetAirport(t *testing.T) {
+func TestGetTAFMultiple(t *testing.T) {
+	payload := []map[string]any{
+		{"icaoId": "KSFO", "issueTime": "2024-01-14T18:00:00Z", "rawTAF": "TAF KSFO 141720Z ..."},
+		{"icaoId": "KLAX", "issueTime": "2024-01-14T18:00:00Z", "rawTAF": "TAF KLAX 141720Z ..."},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids := r.URL.Query().Get("ids")
+		if ids != "KSFO,KLAX" {
+			t.Errorf("ids = %q, want KSFO,KLAX", ids)
+		}
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	defer srv.Close()
+
+	c := aviationweather.NewClient()
+	c.Rate = 0
+	records, err := c.GetTAFFromURL(context.Background(), srv.URL+"/api/data/taf?ids=KSFO,KLAX&format=json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+}
+
+func TestGetStation(t *testing.T) {
 	payload := []map[string]any{
 		{
 			"icaoId":  "KORD",
 			"iataId":  "ORD",
-			"site":    "Chicago O'Hare Intl",
+			"name":    "Chicago O'Hare Intl Airport",
 			"state":   "IL",
 			"country": "US",
-			"lat":     41.98,
-			"lon":     -87.90,
+			"lat":     41.978,
+			"lon":     -87.904,
 			"elev":    668,
 		},
 	}
@@ -161,43 +214,7 @@ func TestGetAirport(t *testing.T) {
 
 	c := aviationweather.NewClient()
 	c.Rate = 0
-	records, err := c.GetAirportFromURL(context.Background(), srv.URL+"/api/data/airport?ids=KORD&format=json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("got %d records, want 1", len(records))
-	}
-	a := records[0]
-	if a.ICAO != "KORD" {
-		t.Errorf("ICAO = %q, want KORD", a.ICAO)
-	}
-	if a.IATA != "ORD" {
-		t.Errorf("IATA = %q, want ORD", a.IATA)
-	}
-	if a.Elevation != 668 {
-		t.Errorf("Elevation = %d, want 668", a.Elevation)
-	}
-}
-
-func TestGetSIGMET(t *testing.T) {
-	payload := []map[string]any{
-		{
-			"airsigmetType": "SIGMET",
-			"hazard":        "TS",
-			"severity":      "MODERATE",
-			"altitudeLow1":  0,
-			"altitudeHi1":   45000,
-		},
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(payload)
-	}))
-	defer srv.Close()
-
-	c := aviationweather.NewClient()
-	c.Rate = 0
-	records, err := c.GetSIGMETFromURL(context.Background(), srv.URL+"/api/data/sigmet?format=json")
+	records, err := c.GetStationFromURL(context.Background(), srv.URL+"/api/data/airport?ids=KORD&format=json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,35 +222,19 @@ func TestGetSIGMET(t *testing.T) {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
 	s := records[0]
-	if s.Type != "SIGMET" {
-		t.Errorf("Type = %q, want SIGMET", s.Type)
+	if s.ICAO != "KORD" {
+		t.Errorf("ICAO = %q, want KORD", s.ICAO)
 	}
-	if s.AltHigh != 45000 {
-		t.Errorf("AltHigh = %d, want 45000", s.AltHigh)
+	if s.IATA != "ORD" {
+		t.Errorf("IATA = %q, want ORD", s.IATA)
 	}
-}
-
-func TestGetMultipleStations(t *testing.T) {
-	payload := []map[string]any{
-		{"stationId": "KJFK", "obsTime": "", "rawOb": "KJFK raw", "sky": []map[string]any{}},
-		{"stationId": "KLAX", "obsTime": "", "rawOb": "KLAX raw", "sky": []map[string]any{}},
+	if s.State != "IL" {
+		t.Errorf("State = %q, want IL", s.State)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ids := r.URL.Query().Get("ids")
-		if ids != "KJFK,KLAX" {
-			t.Errorf("ids = %q, want KJFK,KLAX", ids)
-		}
-		_ = json.NewEncoder(w).Encode(payload)
-	}))
-	defer srv.Close()
-
-	c := aviationweather.NewClient()
-	c.Rate = 0
-	records, err := c.GetMETARFromURL(context.Background(), srv.URL+"/api/data/metar?ids=KJFK,KLAX&format=json")
-	if err != nil {
-		t.Fatal(err)
+	if s.Elev != 668 {
+		t.Errorf("Elev = %d, want 668", s.Elev)
 	}
-	if len(records) != 2 {
-		t.Fatalf("got %d records, want 2", len(records))
+	if s.Lat != "41.978" {
+		t.Errorf("Lat = %q, want 41.978", s.Lat)
 	}
 }
