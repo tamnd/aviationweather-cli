@@ -1,35 +1,35 @@
 // Package aviationweather is the library behind the aviationweather command line:
-// the HTTP client, request shaping, and the typed data models for aviationweather.
+// the HTTP client, request shaping, and the typed data models for the
+// Aviation Weather Center API (aviationweather.gov/api/data).
 //
 // The Client here is the spine every command shares. It sets a real
 // User-Agent, paces requests so a busy session stays polite, and retries the
-// transient failures (429 and 5xx) that any public site throws under load.
-// Build your endpoint calls and JSON decoding on top of it.
+// transient failures (429 and 5xx) that any public API throws under load.
 package aviationweather
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 )
 
-// DefaultUserAgent identifies the client to aviationweather. A real, honest
-// User-Agent is both polite and the thing most likely to keep you unblocked.
-const DefaultUserAgent = "aviationweather/dev (+https://github.com/tamnd/aviationweather-cli)"
+// DefaultUserAgent identifies the client to aviationweather.gov.
+const DefaultUserAgent = "aviationweather-cli/dev (+https://github.com/tamnd/aviationweather-cli)"
 
-// Host is the site this client talks to, and the host the URI driver in
-// domain.go claims. The scaffold points it at aviationweather.com; change it once you
-// know the real endpoints you want to read.
-const Host = "aviationweather.com"
+// Host is the site this client talks to.
+const Host = "aviationweather.gov"
 
 // BaseURL is the root every request is built from.
 const BaseURL = "https://" + Host
 
-// Client talks to aviationweather over HTTP.
+// apiBase is the data API prefix.
+const apiBase = BaseURL + "/api/data"
+
+// Client talks to aviationweather.gov over HTTP.
 type Client struct {
 	HTTP      *http.Client
 	UserAgent string
@@ -40,7 +40,7 @@ type Client struct {
 	last time.Time
 }
 
-// NewClient returns a Client with sensible defaults: a 30s timeout, a 200ms
+// NewClient returns a Client with sensible defaults: a 30 s timeout, a 200 ms
 // minimum gap between requests, and five retries on transient errors.
 func NewClient() *Client {
 	return &Client{
@@ -123,78 +123,230 @@ func backoff(attempt int) time.Duration {
 	return d
 }
 
-// Page is the scaffold's one example record: a single page, addressed by the
-// path that names it on aviationweather.com. It is a stand-in for the typed records you
-// will model from the real aviationweather endpoints. The kit struct tags make it
-// addressable as a resource URI (see domain.go): ID is the URI id, and Body is
-// the long text `aviationweather cat` and the Markdown export print.
-type Page struct {
-	ID    string `json:"id" kit:"id"`
-	URL   string `json:"url"`
-	Title string `json:"title,omitempty"`
-	Body  string `json:"body,omitempty" kit:"body"`
+// ---------- output types ----------
+
+// METAR is a single aviation weather observation.
+type METAR struct {
+	Station    string  `kit:"id" json:"station"`
+	ObsTime    string  `json:"obs_time"`
+	Raw        string  `json:"raw"`
+	Temp       float64 `json:"temp_c"`
+	Dewpoint   float64 `json:"dewpoint_c"`
+	WindDir    int     `json:"wind_dir"`
+	WindSpeed  int     `json:"wind_speed"`
+	WindGust   int     `json:"wind_gust"`
+	Visibility float64 `json:"visibility_sm"`
+	Altimeter  float64 `json:"altimeter_inhg"`
+	WxString   string  `json:"wx_string"`
+	SkyString  string  `json:"sky"` // joined from sky array, e.g. "FEW020 SCT050"
 }
 
-// GetPage fetches one page by its path (for example "wiki/Go") and returns it as
-// a record. The scaffold keeps a plain-text preview of the response as the body;
-// replace the parsing with the real fields once you know the endpoint's shape.
-func (c *Client) GetPage(ctx context.Context, path string) (*Page, error) {
-	path = strings.Trim(path, "/")
-	url := BaseURL + "/" + path
+// TAF is a terminal aerodrome forecast.
+type TAF struct {
+	Station   string `kit:"id" json:"station"`
+	IssueTime string `json:"issue_time"`
+	Raw       string `json:"raw"`
+}
+
+// Airport holds static airport information.
+type Airport struct {
+	ICAO      string  `kit:"id" json:"icao"`
+	IATA      string  `json:"iata"`
+	Name      string  `json:"name"`
+	State     string  `json:"state"`
+	Country   string  `json:"country"`
+	Lat       float64 `json:"lat"`
+	Lon       float64 `json:"lon"`
+	Elevation int     `json:"elevation_ft"`
+}
+
+// SIGMET is a significant meteorological information notice.
+type SIGMET struct {
+	Type     string `kit:"id" json:"type"`
+	Hazard   string `json:"hazard"`
+	Severity string `json:"severity"`
+	AltLow   int    `json:"alt_low_ft"`
+	AltHigh  int    `json:"alt_high_ft"`
+}
+
+// ---------- wire types ----------
+
+type wireSkyLayer struct {
+	Cover string `json:"cover"`
+	Base  int    `json:"base"`
+}
+
+type wireMetar struct {
+	StationId string         `json:"stationId"`
+	ObsTime   string         `json:"obsTime"`
+	RawOb     string         `json:"rawOb"`
+	Temp      float64        `json:"temp"`
+	Dewpoint  float64        `json:"dewpoint"`
+	Wdir      int            `json:"wdir"`
+	Wspd      int            `json:"wspd"`
+	Wgst      int            `json:"wgst"`
+	Visib     float64        `json:"visib"`
+	Altim     float64        `json:"altim"`
+	WxString  string         `json:"wxString"`
+	Sky       []wireSkyLayer `json:"sky"`
+}
+
+type wireTaf struct {
+	StationId string `json:"stationId"`
+	IssueTime string `json:"issueTime"`
+	RawTAF    string `json:"rawTAF"`
+}
+
+type wireAirport struct {
+	IcaoId  string  `json:"icaoId"`
+	IataId  string  `json:"iataId"`
+	Site    string  `json:"site"`
+	State   string  `json:"state"`
+	Country string  `json:"country"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+	Elev    int     `json:"elev"`
+}
+
+type wireSigmet struct {
+	AirsigmetType string `json:"airsigmetType"`
+	Hazard        string `json:"hazard"`
+	Severity      string `json:"severity"`
+	AltitudeLow1  int    `json:"altitudeLow1"`
+	AltitudeHi1   int    `json:"altitudeHi1"`
+}
+
+// ---------- API methods ----------
+
+// GetMETAR fetches METAR observations for the given comma-separated station ids.
+func (c *Client) GetMETAR(ctx context.Context, ids string) ([]*METAR, error) {
+	return c.GetMETARFromURL(ctx, apiBase+"/metar?ids="+ids+"&format=json")
+}
+
+// GetMETARFromURL fetches METAR observations from an explicit URL (useful for testing).
+func (c *Client) GetMETARFromURL(ctx context.Context, url string) ([]*METAR, error) {
 	body, err := c.Get(ctx, url)
 	if err != nil {
 		return nil, err
 	}
-	return &Page{ID: path, URL: url, Title: path, Body: pageText(body)}, nil
-}
-
-// PageLinks fetches a page and returns the same-host pages it links to, as page
-// stubs. It shows the member-listing pattern the URI driver relies on: every
-// stub carries enough (an id and a URL) to be addressed and followed on its own.
-func (c *Client) PageLinks(ctx context.Context, path string, limit int) ([]*Page, error) {
-	path = strings.Trim(path, "/")
-	body, err := c.Get(ctx, BaseURL+"/"+path)
-	if err != nil {
-		return nil, err
+	var raw []wireMetar
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode metar: %w", err)
 	}
-	var out []*Page
-	seen := map[string]bool{}
-	for _, p := range linkPaths(body) {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, &Page{ID: p, URL: BaseURL + "/" + p})
-		if limit > 0 && len(out) >= limit {
-			break
-		}
+	out := make([]*METAR, 0, len(raw))
+	for _, w := range raw {
+		out = append(out, &METAR{
+			Station:    w.StationId,
+			ObsTime:    w.ObsTime,
+			Raw:        w.RawOb,
+			Temp:       w.Temp,
+			Dewpoint:   w.Dewpoint,
+			WindDir:    w.Wdir,
+			WindSpeed:  w.Wspd,
+			WindGust:   w.Wgst,
+			Visibility: w.Visib,
+			Altimeter:  w.Altim,
+			WxString:   w.WxString,
+			SkyString:  joinSky(w.Sky),
+		})
 	}
 	return out, nil
 }
 
-var (
-	hrefRE = regexp.MustCompile(`href="(/[^":#?]+)"`)
-	tagRE  = regexp.MustCompile(`<[^>]+>`)
-)
-
-// linkPaths pulls the relative link targets out of an HTML response, so a list
-// op can turn each into an addressable page stub.
-func linkPaths(body []byte) []string {
-	var out []string
-	for _, m := range hrefRE.FindAllSubmatch(body, -1) {
-		if p := strings.Trim(string(m[1]), "/"); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+// GetTAF fetches TAF forecasts for the given comma-separated station ids.
+func (c *Client) GetTAF(ctx context.Context, ids string) ([]*TAF, error) {
+	return c.GetTAFFromURL(ctx, apiBase+"/taf?ids="+ids+"&format=json")
 }
 
-// pageText reduces an HTML response to a short plain-text preview, a stand-in
-// for the typed extract a real endpoint would hand you.
-func pageText(body []byte) string {
-	s := strings.Join(strings.Fields(tagRE.ReplaceAllString(string(body), " ")), " ")
-	if len(s) > 500 {
-		s = s[:500]
+// GetTAFFromURL fetches TAF forecasts from an explicit URL (useful for testing).
+func (c *Client) GetTAFFromURL(ctx context.Context, url string) ([]*TAF, error) {
+	body, err := c.Get(ctx, url)
+	if err != nil {
+		return nil, err
 	}
-	return s
+	var raw []wireTaf
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode taf: %w", err)
+	}
+	out := make([]*TAF, 0, len(raw))
+	for _, w := range raw {
+		out = append(out, &TAF{
+			Station:   w.StationId,
+			IssueTime: w.IssueTime,
+			Raw:       w.RawTAF,
+		})
+	}
+	return out, nil
+}
+
+// GetAirport fetches airport information for the given comma-separated ICAO ids.
+func (c *Client) GetAirport(ctx context.Context, ids string) ([]*Airport, error) {
+	return c.GetAirportFromURL(ctx, apiBase+"/airport?ids="+ids+"&format=json")
+}
+
+// GetAirportFromURL fetches airport information from an explicit URL (useful for testing).
+func (c *Client) GetAirportFromURL(ctx context.Context, url string) ([]*Airport, error) {
+	body, err := c.Get(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	var raw []wireAirport
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode airport: %w", err)
+	}
+	out := make([]*Airport, 0, len(raw))
+	for _, w := range raw {
+		out = append(out, &Airport{
+			ICAO:      w.IcaoId,
+			IATA:      w.IataId,
+			Name:      w.Site,
+			State:     w.State,
+			Country:   w.Country,
+			Lat:       w.Lat,
+			Lon:       w.Lon,
+			Elevation: w.Elev,
+		})
+	}
+	return out, nil
+}
+
+// GetSIGMET fetches all active SIGMETs.
+func (c *Client) GetSIGMET(ctx context.Context) ([]*SIGMET, error) {
+	return c.GetSIGMETFromURL(ctx, apiBase+"/sigmet?format=json")
+}
+
+// GetSIGMETFromURL fetches SIGMETs from an explicit URL (useful for testing).
+func (c *Client) GetSIGMETFromURL(ctx context.Context, url string) ([]*SIGMET, error) {
+	body, err := c.Get(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	var raw []wireSigmet
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode sigmet: %w", err)
+	}
+	out := make([]*SIGMET, 0, len(raw))
+	for _, w := range raw {
+		out = append(out, &SIGMET{
+			Type:     w.AirsigmetType,
+			Hazard:   w.Hazard,
+			Severity: w.Severity,
+			AltLow:   w.AltitudeLow1,
+			AltHigh:  w.AltitudeHi1,
+		})
+	}
+	return out, nil
+}
+
+// joinSky formats a list of sky layers as "FEW020 SCT050 BKN200".
+func joinSky(layers []wireSkyLayer) string {
+	parts := make([]string, 0, len(layers))
+	for _, l := range layers {
+		if l.Cover == "" {
+			continue
+		}
+		// base is in hundreds of feet
+		parts = append(parts, fmt.Sprintf("%s%03d", l.Cover, l.Base/100))
+	}
+	return strings.Join(parts, " ")
 }
