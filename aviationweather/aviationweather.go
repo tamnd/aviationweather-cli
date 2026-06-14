@@ -165,19 +165,19 @@ type wireSkyLayer struct {
 }
 
 type wireMetar struct {
-	IcaoId    string          `json:"icaoId"`
-	ObsTime   int64           `json:"obsTime"`
-	ReportTime string         `json:"reportTime"`
-	RawOb     string          `json:"rawOb"`
-	Temp      float64         `json:"temp"`
-	Dewp      float64         `json:"dewp"`
-	Wdir      int             `json:"wdir"`
-	Wspd      int             `json:"wspd"`
-	Visib     json.RawMessage `json:"visib"`
-	Altim     float64         `json:"altim"`
-	WxString  string          `json:"wxString"`
-	Sky       []wireSkyLayer  `json:"sky"`
-	Clouds    []wireSkyLayer  `json:"clouds"`
+	IcaoId     string          `json:"icaoId"`
+	ObsTime    int64           `json:"obsTime"`
+	ReportTime string          `json:"reportTime"`
+	RawOb      string          `json:"rawOb"`
+	Temp       float64         `json:"temp"`
+	Dewp       float64         `json:"dewp"`
+	Wdir       int             `json:"wdir"`
+	Wspd       int             `json:"wspd"`
+	Visib      json.RawMessage `json:"visib"`
+	Altim      float64         `json:"altim"`
+	WxString   string          `json:"wxString"`
+	Sky        []wireSkyLayer  `json:"sky"`
+	Clouds     []wireSkyLayer  `json:"clouds"`
 }
 
 type wireTaf struct {
