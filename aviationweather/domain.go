@@ -53,30 +53,22 @@ func (Domain) Register(app *kit.App) {
 		Name: "metar", Group: "read", Single: true,
 		Summary: "Fetch METAR observations for one or more stations",
 		URIType: "station", Resolver: true,
-		Args: []kit.Arg{{Name: "stations", Help: "ICAO station codes comma-separated, e.g. KJFK,KLAX"}},
+		Args: []kit.Arg{{Name: "stations", Help: "ICAO station codes e.g. KJFK KLAX", Variadic: true}},
 	}, getMETAR)
 
 	kit.Handle(app, kit.OpMeta{
 		Name: "taf", Group: "read", Single: true,
 		Summary: "Fetch TAF forecasts for one or more stations",
 		URIType: "station",
-		Args:    []kit.Arg{{Name: "stations", Help: "ICAO station codes comma-separated"}},
+		Args:    []kit.Arg{{Name: "stations", Help: "ICAO station codes e.g. KSFO KLAX", Variadic: true}},
 	}, getTAF)
 
 	kit.Handle(app, kit.OpMeta{
-		Name: "airport", Group: "read", Single: true,
-		Summary: "Fetch airport information for one or more ICAO codes",
+		Name: "station", Group: "read", Single: true,
+		Summary: "Fetch airport/station info for one or more ICAO codes",
 		URIType: "station",
-		Args:    []kit.Arg{{Name: "stations", Help: "ICAO codes comma-separated"}},
-	}, getAirport)
-
-	kit.Handle(app, kit.OpMeta{
-		Name:    "sigmet",
-		Group:   "read",
-		List:    true,
-		Summary: "List active SIGMETs",
-		URIType: "sigmet",
-	}, getSIGMET)
+		Args:    []kit.Arg{{Name: "stations", Help: "ICAO codes e.g. KSFO KLAX", Variadic: true}},
+	}, getStation)
 }
 
 // newClient builds the client from the host-resolved config.
@@ -100,30 +92,32 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 // --- inputs ---
 
 type metarInput struct {
-	Stations string  `kit:"arg" help:"ICAO station codes comma-separated, e.g. KJFK,KLAX"`
-	Client   *Client `kit:"inject"`
+	Stations []string `kit:"arg,variadic" help:"ICAO station codes e.g. KJFK KLAX"`
+	Hours    int      `kit:"flag" help:"how many hours back" default:"1"`
+	Client   *Client  `kit:"inject"`
 }
 
 type tafInput struct {
-	Stations string  `kit:"arg" help:"ICAO station codes comma-separated"`
-	Client   *Client `kit:"inject"`
+	Stations []string `kit:"arg,variadic" help:"ICAO station codes e.g. KSFO KLAX"`
+	Client   *Client  `kit:"inject"`
 }
 
-type airportInput struct {
-	Stations string  `kit:"arg" help:"ICAO codes comma-separated"`
-	Client   *Client `kit:"inject"`
-}
-
-type sigmetInput struct {
-	Client *Client `kit:"inject"`
+type stationInput struct {
+	Stations []string `kit:"arg,variadic" help:"ICAO codes e.g. KSFO KLAX"`
+	Client   *Client  `kit:"inject"`
 }
 
 // --- handlers ---
 
 func getMETAR(ctx context.Context, in metarInput, emit func(*METAR) error) error {
-	records, err := in.Client.GetMETAR(ctx, in.Stations)
+	ids := strings.Join(in.Stations, ",")
+	hours := in.Hours
+	if hours <= 0 {
+		hours = 1
+	}
+	records, err := in.Client.GetMETAR(ctx, ids, hours)
 	if err != nil {
-		return mapErr(err)
+		return err
 	}
 	for _, r := range records {
 		if err := emit(r); err != nil {
@@ -134,9 +128,10 @@ func getMETAR(ctx context.Context, in metarInput, emit func(*METAR) error) error
 }
 
 func getTAF(ctx context.Context, in tafInput, emit func(*TAF) error) error {
-	records, err := in.Client.GetTAF(ctx, in.Stations)
+	ids := strings.Join(in.Stations, ",")
+	records, err := in.Client.GetTAF(ctx, ids)
 	if err != nil {
-		return mapErr(err)
+		return err
 	}
 	for _, r := range records {
 		if err := emit(r); err != nil {
@@ -146,23 +141,11 @@ func getTAF(ctx context.Context, in tafInput, emit func(*TAF) error) error {
 	return nil
 }
 
-func getAirport(ctx context.Context, in airportInput, emit func(*Airport) error) error {
-	records, err := in.Client.GetAirport(ctx, in.Stations)
+func getStation(ctx context.Context, in stationInput, emit func(*Station) error) error {
+	ids := strings.Join(in.Stations, ",")
+	records, err := in.Client.GetStation(ctx, ids)
 	if err != nil {
-		return mapErr(err)
-	}
-	for _, r := range records {
-		if err := emit(r); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func getSIGMET(ctx context.Context, in sigmetInput, emit func(*SIGMET) error) error {
-	records, err := in.Client.GetSIGMET(ctx)
-	if err != nil {
-		return mapErr(err)
+		return err
 	}
 	for _, r := range records {
 		if err := emit(r); err != nil {
@@ -195,10 +178,4 @@ func (Domain) Locate(uriType, id string) (string, error) {
 		return "", errs.Usage("aviationweather has no resource type %q", uriType)
 	}
 	return "https://" + Host + "/metar/data?ids=" + id + "&format=decoded&hours=0", nil
-}
-
-// mapErr converts a library error into the kit error kind that carries the
-// right exit code.
-func mapErr(err error) error {
-	return err
 }
